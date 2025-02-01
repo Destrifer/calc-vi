@@ -1,62 +1,120 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import { parseStringPromise } from "xml2js";
+
+// -------------------------
+// Параметры расчёта
+// -------------------------
+const today = new Date();
+const fromDate = "2024-06-30"; // Дата начала расчёта
+const toDate = today.toISOString().split("T")[0]; // Сегодняшняя дата
+const sumDebt = 2_000_000; // Сумма долга (2 000 000 руб.)
+
+// -------------------------
+// SOAP-запрос к ЦБ РФ
+// -------------------------
+const soapRequest = `
+  <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:web="http://web.cbr.ru/">
+     <soapenv:Header/>
+     <soapenv:Body>
+        <web:KeyRateXML>
+           <web:fromDate>${fromDate}</web:fromDate>
+           <web:ToDate>${toDate}</web:ToDate>
+        </web:KeyRateXML>
+     </soapenv:Body>
+  </soapenv:Envelope>`;
+
+const response = await fetch(
+	"https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx",
+	{
+		method: "POST",
+		headers: {
+			"Content-Type": "text/xml; charset=utf-8",
+			SOAPAction: "http://web.cbr.ru/KeyRateXML",
+		},
+		body: soapRequest,
+	},
+);
+const xmlText = await response.text();
+const jsonData = await parseStringPromise(xmlText);
+
+// -------------------------
+// Обработка данных
+// -------------------------
+const keyRates =
+	jsonData["soap:Envelope"]["soap:Body"][0]["KeyRateXMLResponse"][0][
+		"KeyRateXMLResult"
+	][0]["KeyRate"][0]["KR"];
+
+const rateHistory = keyRates.map((rate) => ({
+	date: new Date(rate["DT"][0]),
+	value: parseFloat(rate["Rate"][0]),
+}));
+
+const filteredRates = rateHistory
+	.filter(
+		(rate, index, array) =>
+			index === 0 || rate.value !== array[index - 1].value,
+	)
+	.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+filteredRates.push({
+	date: today,
+	value: filteredRates[filteredRates.length - 1].value,
+});
+
+let totalPenalty = 0;
+let breakdown = [];
+for (let i = 0; i < filteredRates.length - 1; i++) {
+	const currentRate = filteredRates[i].value;
+	const startPeriod = filteredRates[i].date;
+	const endPeriod = filteredRates[i + 1].date;
+
+	const days =
+		(endPeriod.getTime() - startPeriod.getTime()) / (1000 * 60 * 60 * 24);
+	if (days > 0) {
+		const penalty = ((sumDebt * currentRate) / 100) * (days / 365);
+		totalPenalty += penalty;
+		breakdown.push({
+			start: startPeriod.toISOString().split("T")[0],
+			end: endPeriod.toISOString().split("T")[0],
+			rate: currentRate,
+			days: Math.round(days),
+			penalty: penalty,
+		});
+	}
+}
+totalPenalty = parseFloat(totalPenalty.toFixed(2));
 ---
 
 <Layout>
-	<h1>Динамический расчет неустойки</h1>
-
+	<h1>Общий расчёт задолженности по неустойке</h1>
 	<p>Сумма долга: <strong>2 000 000 руб.</strong></p>
-	<p>Общая неустойка: <strong id="penalty">Загрузка...</strong> руб.</p>
+	<p>Общая неустойка: <strong>{totalPenalty} руб.</strong></p>
 
-	<script>
-		let lastPenalty = 0;
-		let lastUpdateTime = Date.now();
-		let ratePerMs = 0;
-		let isAnimating = false;
-
-		async function fetchPenalty() {
-			try {
-				const response = await fetch("/api/penalty");
-				const data = await response.json();
-
-				if (data.penalty > 0) {
-					const now = Date.now();
-					lastPenalty = parseFloat(data.penalty);
-					lastUpdateTime = now;
-
-					// Рассчитываем прирост в рублях за миллисекунду
-					ratePerMs = lastPenalty / (1000 * 60 * 60 * 24 * 365); // Примерный прирост (грубая оценка)
-
-					// Сразу показываем правильное значение
-					document.getElementById("penalty").innerText = lastPenalty.toFixed(2);
-
-					// Если анимация не запущена — запускаем
-					if (!isAnimating) {
-						isAnimating = true;
-						animatePenalty();
-					}
-				}
-			} catch (error) {
-				console.error("Ошибка загрузки данных:", error);
+	<h2>Детализация расчёта</h2>
+	<table border="1" cellspacing="0" cellpadding="5">
+		<thead>
+			<tr>
+				<th>Период</th>
+				<th>Ставка (%)</th>
+				<th>Дней</th>
+				<th>Начислено (руб.)</th>
+			</tr>
+		</thead>
+		<tbody>
+			{
+				breakdown.map((row) => (
+					<tr>
+						<td>
+							{row.start} – {row.end}
+						</td>
+						<td>{row.rate.toFixed(2)}</td>
+						<td>{row.days}</td>
+						<td>{row.penalty.toFixed(2)}</td>
+					</tr>
+				))
 			}
-		}
-
-		function animatePenalty() {
-			const now = Date.now();
-			const elapsedMs = now - lastUpdateTime;
-
-			if (ratePerMs > 0) {
-				const newPenalty = lastPenalty + ratePerMs * elapsedMs;
-				document.getElementById("penalty").innerText = newPenalty.toFixed(2);
-			}
-
-			requestAnimationFrame(animatePenalty);
-		}
-
-		// Сначала получаем актуальное значение, потом запускаем анимацию
-		fetchPenalty();
-
-		// Обновляем данные с сервера раз в 10 секунд
-		setInterval(fetchPenalty, 10000);
-	</script>
+		</tbody>
+	</table>
 </Layout>

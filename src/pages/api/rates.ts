@@ -1,11 +1,9 @@
 import { parseStringPromise } from "xml2js";
 
-export async function GET() {  // <--- Должно быть с заглавными буквами
+export async function GET() {
 	const today = new Date();
-	const fromDate = "2024-06-30";
-	const toDate = today.toISOString().split("T")[0];
-
-	const sumDebt = 2_000_000;
+	const fromDate = "2024-06-30"; // Дата начала выборки
+	const toDate = today.toISOString().split("T")[0]; // Сегодняшняя дата
 
 	const soapRequest = `
     <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:web="http://web.cbr.ru/">
@@ -32,26 +30,13 @@ export async function GET() {  // <--- Должно быть с заглавны
 
 	const keyRates = jsonData["soap:Envelope"]["soap:Body"][0]["KeyRateXMLResponse"][0]["KeyRateXMLResult"][0]["KeyRate"][0]["KR"];
 
+	// Преобразуем данные в массив { date, value }
 	const rateHistory = keyRates.map((rate) => ({
-		date: new Date(rate["DT"][0]),
-		value: parseFloat(rate["Rate"][0])
+		date: rate["DT"][0].split("T")[0], // Убираем время, оставляем только дату
+		value: parseFloat(rate["Rate"][0]) // Числовое значение ставки
 	}));
 
-	const filteredRates = rateHistory
-		.filter((rate, index, array) => index === 0 || rate.value !== array[index - 1].value)
-		.sort((a, b) => a.date - b.date);
-
-	filteredRates.push({ date: today, value: filteredRates[filteredRates.length - 1].value });
-
-	let totalPenalty = 0;
-	for (let i = 0; i < filteredRates.length - 1; i++) {
-		const rate = filteredRates[i].value;
-		const days = Math.max(0, (filteredRates[i + 1].date - filteredRates[i].date) / (1000 * 60 * 60 * 24));
-		const penalty = (sumDebt * rate / 100) * (days / 365);
-		totalPenalty += penalty;
-	}
-
-	return new Response(JSON.stringify({ penalty: totalPenalty.toFixed(2) }), {
+	return new Response(JSON.stringify({ rates: rateHistory }), {
 		headers: { "Content-Type": "application/json" }
 	});
 }
