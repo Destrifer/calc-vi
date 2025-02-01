@@ -31,10 +31,22 @@ export async function GET() {
 	const keyRates = jsonData["soap:Envelope"]["soap:Body"][0]["KeyRateXMLResponse"][0]["KeyRateXMLResult"][0]["KeyRate"][0]["KR"];
 
 	// Преобразуем данные в массив { date, value }
-	const rateHistory = keyRates.map((rate) => ({
+	let rateHistory = keyRates.map((rate) => ({
 		date: rate["DT"][0].split("T")[0], // Убираем время, оставляем только дату
 		value: parseFloat(rate["Rate"][0]) // Числовое значение ставки
 	}));
+
+	// ✅ Сортируем по возрастанию даты
+	rateHistory.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+	// ✅ Если API не вернул ставку на 30 июня, добавляем вручную
+	if (!rateHistory.some(rate => rate.date === fromDate)) {
+		console.log("📢 Ставка на 30 июня отсутствует, добавляем вручную!");
+		rateHistory.unshift({
+			date: fromDate,
+			value: rateHistory[0].value // Берём первую известную ставку
+		});
+	}
 
 	return new Response(JSON.stringify({ rates: rateHistory }), {
 		headers: { "Content-Type": "application/json" }
