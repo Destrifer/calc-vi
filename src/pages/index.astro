@@ -1,104 +1,62 @@
 ---
-import { parseStringPromise } from "xml2js";
 import Layout from "../layouts/Layout.astro";
-
-const today = new Date();
-const fromDate = "2024-06-30"; // Дата начала расчета
-const toDate = today.toISOString().split("T")[0]; // Сегодняшняя дата
-
-const sumDebt = 2_000_000; // Сумма долга (2 млн руб.)
-
-const soapRequest = `
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:web="http://web.cbr.ru/">
-   <soapenv:Header/>
-   <soapenv:Body>
-      <web:KeyRateXML>
-         <web:fromDate>${fromDate}</web:fromDate>
-         <web:ToDate>${toDate}</web:ToDate>
-      </web:KeyRateXML>
-   </soapenv:Body>
-</soapenv:Envelope>`;
-
-const response = await fetch(
-	"https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx",
-	{
-		method: "POST",
-		headers: {
-			"Content-Type": "text/xml; charset=utf-8",
-			SOAPAction: "http://web.cbr.ru/KeyRateXML",
-		},
-		body: soapRequest,
-	},
-);
-
-const xmlText = await response.text();
-
-// Разбираем XML с помощью xml2js
-const jsonData = await parseStringPromise(xmlText);
-
-// Достаем список ставок
-const keyRates =
-	jsonData["soap:Envelope"]["soap:Body"][0]["KeyRateXMLResponse"][0][
-		"KeyRateXMLResult"
-	][0]["KeyRate"][0]["KR"];
-
-// Преобразуем данные в массив {date, value}
-const rateHistory = keyRates.map((rate) => ({
-	date: new Date(rate["DT"][0]), // Преобразуем в объект Date
-	value: parseFloat(rate["Rate"][0]), // Преобразуем ставку в число
-}));
-
-// Фильтруем только изменения ставки и сортируем даты в правильном порядке
-const filteredRates = rateHistory
-	.filter(
-		(rate, index, array) =>
-			index === 0 || rate.value !== array[index - 1].value,
-	)
-	.sort((a, b) => a.date - b.date); // Сортируем даты в хронологическом порядке
-
-// Добавляем текущую дату как конечную границу расчета
-filteredRates.push({
-	date: today,
-	value: filteredRates[filteredRates.length - 1].value,
-});
-
-// Вычисляем неустойку
-let totalPenalty = 0;
-for (let i = 0; i < filteredRates.length - 1; i++) {
-	const rate = filteredRates[i].value;
-	const days = Math.max(
-		0,
-		(filteredRates[i + 1].date - filteredRates[i].date) / (1000 * 60 * 60 * 24),
-	); // Количество дней (избегаем отрицательных значений)
-
-	const penalty = ((sumDebt * rate) / 100) * (days / 365); // Расчет по формуле
-	totalPenalty += penalty;
-}
 ---
 
 <Layout>
-	<h1>История изменений ключевой ставки ЦБ РФ</h1>
+	<h1>Динамический расчет неустойки</h1>
 
-	<table border="1">
-		<thead>
-			<tr>
-				<th>Дата</th>
-				<th>Ставка (%)</th>
-			</tr>
-		</thead>
-		<tbody>
-			{
-				filteredRates.map((rate) => (
-					<tr>
-						<td>{rate.date.toISOString().split("T")[0]}</td>
-						<td>{rate.value}</td>
-					</tr>
-				))
-			}
-		</tbody>
-	</table>
-
-	<h2>Расчет неустойки</h2>
 	<p>Сумма долга: <strong>2 000 000 руб.</strong></p>
-	<p>Общая неустойка: <strong>{totalPenalty.toFixed(2)} руб.</strong></p>
+	<p>Общая неустойка: <strong id="penalty">Загрузка...</strong> руб.</p>
+
+	<script>
+		let lastPenalty = 0;
+		let lastUpdateTime = Date.now();
+		let ratePerMs = 0;
+		let isAnimating = false;
+
+		async function fetchPenalty() {
+			try {
+				const response = await fetch("/api/penalty");
+				const data = await response.json();
+
+				if (data.penalty > 0) {
+					const now = Date.now();
+					lastPenalty = parseFloat(data.penalty);
+					lastUpdateTime = now;
+
+					// Рассчитываем прирост в рублях за миллисекунду
+					ratePerMs = lastPenalty / (1000 * 60 * 60 * 24 * 365); // Примерный прирост (грубая оценка)
+
+					// Сразу показываем правильное значение
+					document.getElementById("penalty").innerText = lastPenalty.toFixed(2);
+
+					// Если анимация не запущена — запускаем
+					if (!isAnimating) {
+						isAnimating = true;
+						animatePenalty();
+					}
+				}
+			} catch (error) {
+				console.error("Ошибка загрузки данных:", error);
+			}
+		}
+
+		function animatePenalty() {
+			const now = Date.now();
+			const elapsedMs = now - lastUpdateTime;
+
+			if (ratePerMs > 0) {
+				const newPenalty = lastPenalty + ratePerMs * elapsedMs;
+				document.getElementById("penalty").innerText = newPenalty.toFixed(2);
+			}
+
+			requestAnimationFrame(animatePenalty);
+		}
+
+		// Сначала получаем актуальное значение, потом запускаем анимацию
+		fetchPenalty();
+
+		// Обновляем данные с сервера раз в 10 секунд
+		setInterval(fetchPenalty, 10000);
+	</script>
 </Layout>
