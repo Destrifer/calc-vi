@@ -1,165 +1,246 @@
 <template>
   <div>
-    <h1>Общий расчёт задолженности по неустойке (Vue)</h1>
+    <h1>Расчёт неустойки с учётом изменяющейся ставки</h1>
     
-    <p>Сумма долга: <strong>{{ sumDebt.toLocaleString() }} руб.</strong></p>
-    
-    <!-- Поле ввода для ежемесячного платежа -->
-    <div>
-      <label for="monthlyPayment">Ежемесячный платеж:</label>
-      <input
-        type="number"
-        id="monthlyPayment"
-        v-model.number="monthlyPayment"
-        @input="calculateMonthsToPayoff"
-        placeholder="Введите сумму"
+    <div class="input-section">
+      <label>Сумма долга:</label>
+      <input 
+        type="number" 
+        v-model.number="initialDebt" 
+        @change="recalculate"
+        min="0"
+      /> руб.
+    </div>
+
+    <div class="input-section">
+      <label>Начальная дата:</label>
+      <input 
+        type="date" 
+        v-model="startDate"
+        @change="recalculate"
       />
     </div>
 
-    <p v-if="loading">Загрузка данных...</p>
-    <p v-else-if="error">Ошибка загрузки данных</p>
-    <p v-else>Общая неустойка: <strong>{{ totalPenalty.toFixed(2) }} руб.</strong></p>
+    <div v-if="loading" class="status-message">Загрузка ставок...</div>
+    <div v-else-if="error" class="error-message">Ошибка загрузки данных</div>
+    
+    <template v-else>
+      <div class="result">
+        <h2>Итого неустойка: {{ totalPenalty.toFixed(2) }} руб.</h2>
+        <p>Текущий долг: {{ currentDebt.toFixed(2) }} руб.</p>
+      </div>
 
-    <!-- Вывод оставшихся месяцев -->
-    <p v-if="monthlyPayment > 0">
-      <strong>Осталось месяцев до погашения:</strong> {{ monthsToPayoff }}
-    </p>
-
-    <h2>Детализация расчёта</h2>
-    <table border="1" cellspacing="0" cellpadding="5">
-      <thead>
-        <tr>
-          <th>Период</th>
-          <th>Ставка (%)</th>
-          <th>Дней</th>
-          <th>Начислено (руб.)</th>
-          <th>Сумма долга (на начало периода)</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-if="loading">
-          <td colspan="5">Загрузка...</td>
-        </tr>
-        <tr v-if="error">
-          <td colspan="5">Ошибка загрузки данных</td>
-        </tr>
-        <tr v-for="(row, index) in breakdown" :key="index">
-          <td>{{ row.start }} – {{ row.end }}</td>
-          <td>{{ row.rate.toFixed(2) }}</td>
-          <td>{{ row.days }}</td>
-          <td>{{ row.penalty.toFixed(2) }}</td>
-          <td>{{ row.debtAtStart.toFixed(2) }}</td>
-        </tr>
-      </tbody>
-    </table>
+      <h3>Детализация начислений:</h3>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Период</th>
+              <th>Ставка</th>
+              <th>Дней</th>
+              <th>Начислено</th>
+              <th>Долг на начало периода</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(period, idx) in breakdown" :key="idx">
+              <td>{{ formatDate(period.start) }} - {{ formatDate(period.end) }}</td>
+              <td>{{ period.rate.toFixed(2) }}%</td>
+              <td>{{ period.days }}</td>
+              <td>{{ period.penalty.toFixed(2) }} руб.</td>
+              <td>{{ period.debtAtStart.toFixed(2) }} руб.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
   </div>
 </template>
 
 <script>
 export default {
-  name: "PenaltyCalculator",
+  name: 'PenaltyCalculator',
   data() {
     return {
-      sumDebt: 2_000_000, // Исходная сумма долга
-      monthlyPayment: 0, // Платеж, введенный пользователем
-      monthsToPayoff: 0, // Количество месяцев до полного погашения
+      initialDebt: 2_000_000,
+      startDate: '2024-01-01',
       rates: [],
-      breakdown: [],
-      totalPenalty: 0,
       loading: true,
-      error: false
+      error: false,
+      currentDebt: 0,
+      totalPenalty: 0,
+      breakdown: []
     }
   },
   async mounted() {
-    await this.fetchRates(); // Загружаем данные при загрузке страницы
+    await this.loadRates()
   },
   methods: {
-    async fetchRates() {
+    async loadRates() {
       try {
-        console.log("🔄 Обновление данных...");
-        this.loading = true;
+        this.loading = true
+        const response = await fetch('/api/rates')
+        const data = await response.json()
         
-        const response = await fetch('/api/rates');
-        const data = await response.json();
-
-        console.log("✅ Данные из API:", data);
-
-        if (!data.rates || !Array.isArray(data.rates)) {
-          throw new Error("❌ API вернул некорректный формат!");
+        if (!Array.isArray(data?.rates)) {
+          throw new Error('Некорректный формат данных')
         }
-
-        this.rates = data.rates;
-        this.calculatePenalty(); // Вызываем расчет
-      } catch (error) {
-        console.error("❌ Ошибка загрузки данных:", error);
-        this.error = true;
+        
+        this.rates = data.rates
+          .map(r => ({
+            date: r.date.split('T')[0],
+            value: parseFloat(r.value)
+          }))
+          .sort((a, b) => new Date(a.date) - new Date(b.date))
+        
+        this.recalculate()
+      } catch (err) {
+        console.error('Ошибка:', err)
+        this.error = true
       } finally {
-        this.loading = false;
+        this.loading = false
       }
     },
-    calculatePenalty() {
-      let total = 0;
-      let breakdown = [];
-      let currentDebt = this.sumDebt; // Начальная сумма долга
 
-      const filteredRates = this.rates
-        .filter((rate, index, array) => index === 0 || rate.value !== array[index - 1].value)
-        .sort((a, b) => new Date(a.date) - new Date(b.date));
+    recalculate() {
+      if (!this.rates.length) return
 
-      const today = new Date().toISOString().split("T")[0];
-      filteredRates.push({ date: today, value: filteredRates[filteredRates.length - 1].value });
+      const periods = this.preparePeriods()
+      let debt = parseFloat(this.initialDebt)
+      let total = 0
+      const breakdown = []
 
-      for (let i = 0; i < filteredRates.length - 1; i++) {
-        const currentRate = filteredRates[i].value;
-        const startPeriod = new Date(filteredRates[i].date);
-        const endPeriod = new Date(filteredRates[i + 1].date);
-        const days = (endPeriod - startPeriod) / (1000 * 60 * 60 * 24);
+      for (const period of periods) {
+        const days = this.calculateDays(period.start, period.end)
+        if (days <= 0) continue
 
-        if (days > 0) {
-          const penalty = (currentDebt * currentRate / 100) * (days / 365);
-          total += penalty;
+        const penalty = debt * (period.rate / 100) * (days / 365)
+        total += penalty
+        debt += penalty
 
-          breakdown.push({
-            start: filteredRates[i].date,
-            end: filteredRates[i + 1].date,
-            rate: currentRate,
-            days: Math.round(days),
-            penalty: penalty,
-            debtAtStart: currentDebt
-          });
-
-          currentDebt += penalty; // 📌 Добавляем начисленную неустойку к долгу!
-        }
+        breakdown.push({
+          start: period.start,
+          end: period.end,
+          rate: period.rate,
+          days,
+          penalty,
+          debtAtStart: debt - penalty // Сохраняем начальный долг до начисления
+        })
       }
 
-      this.totalPenalty = total;
-      this.breakdown = breakdown;
-      this.calculateMonthsToPayoff(); // Пересчитываем срок погашения
+      this.totalPenalty = total
+      this.currentDebt = debt
+      this.breakdown = breakdown
     },
-    calculateMonthsToPayoff() {
-      if (this.monthlyPayment <= 0) {
-        this.monthsToPayoff = 0;
-        return;
+
+    preparePeriods() {
+      const today = new Date().toISOString().split('T')[0]
+      const periods = []
+      let prevDate = this.startDate
+
+      // Добавляем текущую дату как конечную точку
+      const adjustedRates = [...this.rates]
+      const lastRateDate = new Date(adjustedRates[adjustedRates.length - 1].date)
+      if (new Date(today) > lastRateDate) {
+        adjustedRates.push({
+          date: today,
+          value: adjustedRates[adjustedRates.length - 1].value
+        })
       }
 
-      let remainingDebt = this.sumDebt + this.totalPenalty;
-      let months = 0;
+      for (const rate of adjustedRates) {
+        const currentDate = rate.date
+        if (new Date(currentDate) < new Date(prevDate)) continue
 
-      while (remainingDebt > 0) {
-        remainingDebt -= this.monthlyPayment;
-        months++;
+        periods.push({
+          start: prevDate,
+          end: currentDate,
+          rate: rate.value
+        })
+        prevDate = currentDate
       }
 
-      this.monthsToPayoff = months;
+      return periods
+    },
+
+    calculateDays(start, end) {
+      const startDate = new Date(start)
+      const endDate = new Date(end)
+      const diff = endDate.getTime() - startDate.getTime()
+      return Math.max(0, Math.ceil(diff / (1000 * 3600 * 24)))
+    },
+
+    formatDate(isoString) {
+      return new Date(isoString).toLocaleDateString('ru-RU')
     }
   }
 }
 </script>
 
 <style scoped>
-input {
-  margin-left: 10px;
-  padding: 5px;
-  width: 150px;
+.input-section {
+  margin: 20px 0;
+  padding: 10px;
+  background: #f5f5f5;
+  border-radius: 4px;
+}
+
+label {
+  margin-right: 10px;
+  font-weight: bold;
+}
+
+input[type="number"], input[type="date"] {
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  margin-right: 10px;
+}
+
+.result {
+  background: #e8f4ff;
+  padding: 15px;
+  border-radius: 4px;
+  margin: 20px 0;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 15px;
+}
+
+th, td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid #ddd;
+}
+
+th {
+  background-color: #f8f9fa;
+}
+
+tr:hover {
+  background-color: #f5f5f5;
+}
+
+.status-message, .error-message {
+  padding: 15px;
+  border-radius: 4px;
+  margin: 20px 0;
+}
+
+.status-message {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.error-message {
+  background: #f8d7da;
+  color: #721c24;
 }
 </style>
